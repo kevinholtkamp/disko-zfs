@@ -1,12 +1,29 @@
 use std::{
-    collections::{HashMap, HashSet, hash_map},
-    error::Error,
+    collections::HashMap,
     fs::File,
     io::{Read, Write},
     path::PathBuf,
     process::Command,
+    str::FromStr,
     str::MatchIndices,
 };
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum ZfsDiskoError {
+    #[error("ZFS specification not found")]
+    SpecNotFound(#[source] std::io::Error),
+    #[error("Invalid ZFS output")]
+    InvalidZFSOutput(#[source] serde_json::Error),
+    #[error("ZFS output file not found")]
+    ZFSOutputNotFound(#[source] std::io::Error),
+    #[error("ZFS command failed")]
+    ZFSCommandFailed(#[source] std::io::Error),
+    #[error("ZFS specification invalid")]
+    InvalidSpec(#[source] serde_json::Error),
+    #[error("Couldn't write plan output")]
+    PlanOutputWriteFailed(#[source] std::io::Error),
+}
 
 use clap::Parser as _;
 use serde::{Deserialize, Serialize, de::Visitor};
@@ -529,7 +546,7 @@ enum Commands {
     Apply,
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn main() -> Result<(), ZfsDiskoError> {
     simple_logger::SimpleLogger::new().env().init().unwrap();
 
     let cli = Cli::parse();
@@ -573,15 +590,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     // serde_json::to_writer_pretty(std::io::stdout(), &zfs_spec)?;
 
     let zfs_list_output: ZfsListOutput = if let Some(file) = cli.source.file {
-        let file = File::open(file)?;
-        ZfsListOutput::from_reader(file)?
+        let file = File::open(file).map_err(ZfsDiskoError::ZFSOutputNotFound)?;
+        ZfsListOutput::from_reader(file).map_err(ZfsDiskoError::InvalidZFSOutput)?
     } else {
-        ZfsListOutput::from_command::<Vec<_>, String>(None)?
+        ZfsListOutput::from_command::<Vec<_>, String>(None)
+            .map_err(ZfsDiskoError::ZFSCommandFailed)?
     };
 
     let zfs_spec = {
-        let file = File::open(cli.spec)?;
-        ZfsSpec::from_reader(file)?
+        let file = File::open(cli.spec).map_err(ZfsDiskoError::SpecNotFound)?;
+        ZfsSpec::from_reader(file).map_err(ZfsDiskoError::InvalidSpec)?
     };
 
     let mut ap = VecActionProducer::new();
@@ -598,10 +616,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     match cli.command {
         Commands::Plan { output } => {
             if let Some(output) = output {
-                let mut output = File::create(output)?;
+                let mut output =
+                    File::create(output).map_err(ZfsDiskoError::PlanOutputWriteFailed)?;
 
                 for command in commands {
-                    write!(&mut output, "{}\n", command.join(" "))?;
+                    write!(&mut output, "{}\n", command.join(" "))
+                        .map_err(ZfsDiskoError::PlanOutputWriteFailed)?;
                 }
             } else {
                 for command in commands {
@@ -614,7 +634,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         Commands::Apply => {
             for command in commands {
                 println!("+ {}", &command.join(" "));
-                Command::new(&command[0]).args(&command[1..]).status()?;
+                Command::new(&command[0])
+                    .args(&command[1..])
+                    .status()
+                    .map_err(ZfsDiskoError::ZFSCommandFailed)?;
             }
 
             Ok(())

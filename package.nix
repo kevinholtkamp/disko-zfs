@@ -12,7 +12,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   buildType = "debug";
 
-  cargoHash = "sha256-aqq4k92U9aKlZa8byMFfJUvr1EQ0MJExy30vdzvd5nI=";
+  cargoLock.lockFile = ./Cargo.lock;
 
   meta = {
     description = "Declarative ZFS dataset management.";
