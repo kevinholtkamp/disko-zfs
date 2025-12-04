@@ -66,6 +66,14 @@ in
           actual_value = zfs_get_property(dataset, property)
           assert actual_value == value, f"{dataset}: {actual_value} != {value}"
 
+        def assert_zfs_dataset_exists(dataset):
+          (status, _stdout) = machine.execute(f"zfs list {dataset}")
+          assert status == 0, f"{dataset} doesn't exist"
+
+        def assert_zfs_dataset_not_exists(dataset):
+          (status, _stdout) = machine.execute(f"zfs list {dataset}")
+          assert status != 0, f"{dataset} does exist"
+
         ${extraTestScript}
       '';
     };

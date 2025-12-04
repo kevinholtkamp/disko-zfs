@@ -1,3 +1,4 @@
+use glob::Pattern;
 use log::{Level, LevelFilter};
 use std::{
     collections::{HashMap, HashSet},
@@ -261,11 +262,19 @@ where
             .unwrap_or(false)
 }
 
-fn eval_spec<AP>(action_producer: &mut AP, actual: &ZfsSpecification, desired: &ZfsSpecification)
-where
+fn eval_spec<AP>(
+    action_producer: &mut AP,
+    actual: &ZfsSpecification,
+    desired: &ZfsSpecification,
+    ignored_datasets: &Vec<Pattern>,
+) where
     AP: ActionProducer,
 {
-    let mut desired_datasets = desired.datasets.iter().collect::<Vec<_>>();
+    let mut desired_datasets = desired
+        .datasets
+        .iter()
+        .filter(|(key, _)| ignored_datasets.iter().all(|pat| !pat.matches(key)))
+        .collect::<Vec<_>>();
     desired_datasets.sort_by_key(|(key, _)| key.len());
 
     for (dataset_name, desired_dataset) in desired_datasets {
@@ -411,7 +420,11 @@ where
         }
     }
 
-    for (dataset_name, actual_dataset) in &actual.datasets {
+    for (dataset_name, actual_dataset) in actual
+        .datasets
+        .iter()
+        .filter(|(key, _)| ignored_datasets.iter().all(|pat| !pat.matches(key)))
+    {
         match desired.datasets.get(dataset_name) {
             Some(desired_dataset) => {
                 let mut inherited_properties: Vec<String> = Vec::new();
@@ -462,6 +475,8 @@ struct Cli {
     source: Source,
     #[arg(long = "log-level")]
     log_level: Option<Level>,
+    #[arg(short = 'i', long = "ignored-dataset")]
+    ignored_dataset: Vec<Pattern>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -497,6 +512,7 @@ enum Commands {
 fn get_actions(
     specification_file: &PathBuf,
     zfs_list_output: ZfsList,
+    ignored_datasets: &Vec<Pattern>,
 ) -> Result<ActionSet, ZfsDiskoError> {
     let zfs_specification = {
         let file = File::open(specification_file).map_err(ZfsDiskoError::SpecNotFound)?;
@@ -509,6 +525,7 @@ fn get_actions(
         &mut ap,
         &zfs_list_output.into_specification(&Default::default()),
         &zfs_specification,
+        &ignored_datasets,
     );
 
     let (actions, errors) = ap.finalize();
@@ -559,7 +576,7 @@ fn main() -> Result<(), ZfsDiskoError> {
 
     match cli.command {
         Commands::Plan { spec, output } => {
-            let actions = get_actions(&spec, zfs_list_output)?;
+            let actions = get_actions(&spec, zfs_list_output, &cli.ignored_dataset)?;
 
             let (mut output, prefix): (Box<dyn Write>, String) = if let Some(output) = output {
                 (
@@ -587,7 +604,7 @@ fn main() -> Result<(), ZfsDiskoError> {
             Ok(())
         }
         Commands::Apply { spec } => {
-            let actions = get_actions(&spec, zfs_list_output)?;
+            let actions = get_actions(&spec, zfs_list_output, &cli.ignored_dataset)?;
 
             writeln!(stdout, "# !! Destructive Commands !!")
                 .map_err(ZfsDiskoError::WriteStdoutFailed)?;
