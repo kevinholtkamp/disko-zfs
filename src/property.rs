@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize, de::Visitor};
-use serde_derive::{Deserialize, Serialize};
 
 #[derive(Eq, Hash, PartialEq, Deserialize, Serialize, Debug, Clone)]
 #[serde(tag = "type")]

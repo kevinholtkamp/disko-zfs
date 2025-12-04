@@ -20,18 +20,18 @@ pub enum ZfsDiskoError {
     ZFSCommandFailed(#[source] std::io::Error),
     #[error("ZFS specification invalid")]
     InvalidSpec(#[source] serde_json::Error),
-    #[error("Couldn't write plan output")]
-    PlanOutputWriteFailed(#[source] std::io::Error),
-    #[error("Couldn't serialize current ZFS specification")]
-    SeriliazationCurrentSpecFailed(#[source] serde_json::Error),
+    #[error("Couldn't write to stdout")]
+    WriteStdoutFailed(#[source] std::io::Error),
+    #[error("Couldn't serialize current ZFS specification to JSON")]
+    SeriliazationJSONCurrentSpecFailed(#[source] serde_json::Error),
+    #[error("Couldn't serialize current ZFS specification to Nix")]
+    SeriliazationNixCurrentSpecFailed(#[source] ser_nix::Error),
 }
 
 use clap::Parser as _;
-use serde::{Deserialize, Serialize, de::Visitor};
-use serde_derive::{Deserialize, Serialize};
 
 use crate::{
-    property::{Property, PropertySource, PropertyValue},
+    property::{PropertySource, PropertyValue},
     zfs_list_output::{SpecificationFilter, ZfsList},
     zfs_specification::ZfsSpecification,
 };
@@ -375,6 +375,12 @@ enum CommandsOut {
     Apply,
 }
 
+#[derive(Clone, clap::ValueEnum)]
+enum CommandShowFormat {
+    Json,
+    Nix,
+}
+
 #[derive(Clone, clap::Subcommand)]
 enum Commands {
     Out {
@@ -384,6 +390,8 @@ enum Commands {
         commands: CommandsOut,
     },
     Show {
+        #[arg(value_enum, short, long, default_value = "json")]
+        format: CommandShowFormat,
         #[arg(short = 'p', long = "property")]
         properties: Vec<String>,
     },
@@ -465,11 +473,11 @@ fn main() -> Result<(), ZfsDiskoError> {
                 CommandsOut::Plan { output } => {
                     if let Some(output) = output {
                         let mut output =
-                            File::create(output).map_err(ZfsDiskoError::PlanOutputWriteFailed)?;
+                            File::create(output).map_err(ZfsDiskoError::WriteStdoutFailed)?;
 
                         for command in action_commands {
                             write!(&mut output, "{}\n", command.join(" "))
-                                .map_err(ZfsDiskoError::PlanOutputWriteFailed)?;
+                                .map_err(ZfsDiskoError::WriteStdoutFailed)?;
                         }
                     } else {
                         for command in action_commands {
@@ -492,7 +500,7 @@ fn main() -> Result<(), ZfsDiskoError> {
                 }
             }
         }
-        Commands::Show { properties } => {
+        Commands::Show { format, properties } => {
             let maybe_properties = if properties.is_empty() {
                 None
             } else {
@@ -504,8 +512,21 @@ fn main() -> Result<(), ZfsDiskoError> {
                 properties: maybe_properties,
                 property_sources: Some(|p| p.user_managed()),
             });
-            serde_json::to_writer_pretty(std::io::stdout(), &current_spec)
-                .map_err(ZfsDiskoError::SeriliazationCurrentSpecFailed)?;
+
+            match format {
+                CommandShowFormat::Json => {
+                    serde_json::to_writer_pretty(std::io::stdout(), &current_spec)
+                        .map_err(ZfsDiskoError::SeriliazationJSONCurrentSpecFailed)?;
+                    write!(std::io::stdout(), "\n").map_err(ZfsDiskoError::WriteStdoutFailed)?;
+                }
+                CommandShowFormat::Nix => {
+                    let nix_data = ser_nix::to_string(&current_spec)
+                        .map_err(ZfsDiskoError::SeriliazationNixCurrentSpecFailed)?;
+
+                    write!(std::io::stdout(), "{}\n", nix_data)
+                        .map_err(ZfsDiskoError::WriteStdoutFailed)?;
+                }
+            }
 
             Ok(())
         }
