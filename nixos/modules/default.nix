@@ -51,7 +51,7 @@ in
 
           script = ''
             export PATH="$PATH:/run/booted-system/sw/bin"
-            ${lib.getExe cfg.package} --spec ${configFile} apply
+            ${lib.getExe cfg.package} apply --spec ${configFile}
           '';
         };
       }
