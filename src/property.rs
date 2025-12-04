@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize, de::Visitor};
 use serde_derive::{Deserialize, Serialize};
 
-#[derive(Deserialize, Serialize, Debug, Clone)]
+#[derive(Eq, Hash, PartialEq, Deserialize, Serialize, Debug, Clone)]
 #[serde(tag = "type")]
 pub enum PropertySource {
     #[serde(rename(deserialize = "LOCAL"))]
@@ -14,6 +14,17 @@ pub enum PropertySource {
     Default { data: String },
     #[serde(rename(deserialize = "TEMPORARY"))]
     TEMPORARY { data: String },
+}
+
+impl PropertySource {
+    pub fn user_managed(&self) -> bool {
+        match self {
+            PropertySource::Local { .. }
+            | PropertySource::Inherited { .. }
+            | PropertySource::Default { .. } => true,
+            PropertySource::TEMPORARY { .. } | PropertySource::None { .. } => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

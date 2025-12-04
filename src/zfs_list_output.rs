@@ -1,9 +1,13 @@
 use serde::{Deserialize, Serialize, de::Visitor};
 use serde_derive::Deserialize;
-use std::{collections::HashMap, io::Read, process::Command};
+use std::{
+    collections::{HashMap, HashSet},
+    io::Read,
+    process::Command,
+};
 
 use crate::{
-    property::Property,
+    property::{Property, PropertySource},
     zfs_specification::{self, ZfsSpecification, ZfsSpecificationDataset},
 };
 
@@ -55,6 +59,20 @@ pub struct ZfsList {
     pub datasets: HashMap<String, Dataset>,
 }
 
+pub struct SpecificationFilter<F> {
+    pub properties: Option<HashSet<String>>,
+    pub property_sources: Option<F>,
+}
+
+impl Default for SpecificationFilter<fn(&PropertySource) -> bool> {
+    fn default() -> Self {
+        Self {
+            properties: None,
+            property_sources: None,
+        }
+    }
+}
+
 impl ZfsList {
     pub fn from_command<I, S>(command: Option<I>) -> Result<ZfsList, std::io::Error>
     where
@@ -77,7 +95,10 @@ impl ZfsList {
                 let mut iter = iter1.iter().map(|s| s.as_ref());
                 go(iter.next().unwrap(), iter)
             }
-            None => go("zfs", ["get", "all", "--json", "--json-int"].into_iter()),
+            None => go(
+                "zfs",
+                ["get", "all", "-t", "filesystem", "--json", "--json-int"].into_iter(),
+            ),
         }
     }
 
@@ -88,7 +109,10 @@ impl ZfsList {
         serde_json::from_reader(rdr)
     }
 
-    pub fn into_specification(self) -> ZfsSpecification {
+    pub fn into_specification<F>(self, filter: &SpecificationFilter<F>) -> ZfsSpecification
+    where
+        F: Fn(&PropertySource) -> bool,
+    {
         ZfsSpecification {
             datasets: self
                 .datasets
@@ -100,6 +124,14 @@ impl ZfsList {
                             properties: v
                                 .properties
                                 .into_iter()
+                                .filter(|(k, _)| match &filter.properties {
+                                    Some(property_filter) => property_filter.contains(k),
+                                    None => true,
+                                })
+                                .filter(|(_, v)| match &filter.property_sources {
+                                    Some(source_filter) => source_filter(&v.source),
+                                    None => true,
+                                })
                                 .map(|(k, v)| {
                                     (
                                         k,

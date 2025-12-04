@@ -1,11 +1,10 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::File,
     io::{Read, Write},
     path::PathBuf,
     process::Command,
-    str::FromStr,
-    str::MatchIndices,
+    str::{FromStr, MatchIndices},
 };
 use thiserror::Error;
 
@@ -23,6 +22,8 @@ pub enum ZfsDiskoError {
     InvalidSpec(#[source] serde_json::Error),
     #[error("Couldn't write plan output")]
     PlanOutputWriteFailed(#[source] std::io::Error),
+    #[error("Couldn't serialize current ZFS specification")]
+    SeriliazationCurrentSpecFailed(#[source] serde_json::Error),
 }
 
 use clap::Parser as _;
@@ -31,7 +32,7 @@ use serde_derive::{Deserialize, Serialize};
 
 use crate::{
     property::{Property, PropertySource, PropertyValue},
-    zfs_list_output::ZfsList,
+    zfs_list_output::{SpecificationFilter, ZfsList},
     zfs_specification::ZfsSpecification,
 };
 mod property;
@@ -224,61 +225,61 @@ where
 
             for (property, value) in &dataset.properties {
                 if let Some(property_state) = dataset_state.get_property(property) {
-                    match property_state.source {
-                        Some(PropertySource::Local { .. })
-                        | Some(PropertySource::Inherited { .. })
-                        | Some(PropertySource::Default { .. }) => {
-                            if property_state.value != value.value {
-                                match (&property_state.value, &value.value) {
-                                    (PropertyValue::String(str), PropertyValue::Integer(int))
-                                        if is_k_syntax(str, &int) =>
-                                    {
-                                        log::trace!(
-                                            "dataset {} property {} set to {}, guessing to be equal to {}, skip",
-                                            name,
-                                            property,
-                                            property_state.value.to_string(),
-                                            value.value.to_string()
-                                        );
-                                    }
-                                    (PropertyValue::Integer(int), PropertyValue::String(str))
-                                        if is_k_syntax(str, &int) =>
-                                    {
-                                        log::trace!(
-                                            "dataset {} property {} set to {}, guessing to be equal to {}, skip",
-                                            name,
-                                            property,
-                                            property_state.value.to_string(),
-                                            value.value.to_string()
-                                        );
-                                    }
-                                    _ => {
-                                        log::trace!(
-                                            "dataset {} property {} set to {}, modify to {}",
-                                            name,
-                                            property,
-                                            property_state.value.to_string(),
-                                            value.value.to_string()
-                                        );
-                                        properties.insert(property.to_owned(), value.to_owned());
-                                    }
+                    if property_state
+                        .source
+                        .as_ref()
+                        .map(|p| p.user_managed())
+                        .unwrap_or(false)
+                    {
+                        if property_state.value != value.value {
+                            match (&property_state.value, &value.value) {
+                                (PropertyValue::String(str), PropertyValue::Integer(int))
+                                    if is_k_syntax(str, &int) =>
+                                {
+                                    log::trace!(
+                                        "dataset {} property {} set to {}, guessing to be equal to {}, skip",
+                                        name,
+                                        property,
+                                        property_state.value.to_string(),
+                                        value.value.to_string()
+                                    );
                                 }
-                            } else {
-                                log::trace!(
-                                    "dataset {} property {} already set to {}, skip",
-                                    name,
-                                    property,
-                                    value.value.to_string()
-                                );
+                                (PropertyValue::Integer(int), PropertyValue::String(str))
+                                    if is_k_syntax(str, &int) =>
+                                {
+                                    log::trace!(
+                                        "dataset {} property {} set to {}, guessing to be equal to {}, skip",
+                                        name,
+                                        property,
+                                        property_state.value.to_string(),
+                                        value.value.to_string()
+                                    );
+                                }
+                                _ => {
+                                    log::trace!(
+                                        "dataset {} property {} set to {}, modify to {}",
+                                        name,
+                                        property,
+                                        property_state.value.to_string(),
+                                        value.value.to_string()
+                                    );
+                                    properties.insert(property.to_owned(), value.to_owned());
+                                }
                             }
+                        } else {
+                            log::trace!(
+                                "dataset {} property {} already set to {}, skip",
+                                name,
+                                property,
+                                value.value.to_string()
+                            );
                         }
-                        _ => {
-                            log::trace!("dataset {} property {} not normal, error", name, property,);
-                            action_producer.produce_error(format!(
-                                "cannot set property {} of dataset {} because source is {:?}",
-                                property, name, property_state.source
-                            ))
-                        }
+                    } else {
+                        log::trace!("dataset {} property {} not normal, error", name, property,);
+                        action_producer.produce_error(format!(
+                            "cannot set property {} of dataset {} because source is {:?}",
+                            property, name, property_state.source
+                        ))
                     }
                 } else {
                     log::trace!(
@@ -359,8 +360,6 @@ struct Source {
 #[derive(clap::Parser)]
 #[command(name = "disko-zfs")]
 struct Cli {
-    #[arg(short, long)]
-    spec: PathBuf,
     #[clap(flatten)]
     source: Source,
     #[command(subcommand)]
@@ -368,12 +367,26 @@ struct Cli {
 }
 
 #[derive(Clone, clap::Subcommand)]
-enum Commands {
+enum CommandsOut {
     Plan {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
     Apply,
+}
+
+#[derive(Clone, clap::Subcommand)]
+enum Commands {
+    Out {
+        #[arg(short, long)]
+        spec: PathBuf,
+        #[command(subcommand)]
+        commands: CommandsOut,
+    },
+    Show {
+        #[arg(short = 'p', long = "property")]
+        properties: Vec<String>,
+    },
 }
 
 fn main() -> Result<(), ZfsDiskoError> {
@@ -426,48 +439,73 @@ fn main() -> Result<(), ZfsDiskoError> {
         ZfsList::from_command::<Vec<_>, String>(None).map_err(ZfsDiskoError::ZFSCommandFailed)?
     };
 
-    let zfs_spec = {
-        let file = File::open(cli.spec).map_err(ZfsDiskoError::SpecNotFound)?;
-        ZfsSpecification::from_reader(file).map_err(ZfsDiskoError::InvalidSpec)?
-    };
-
-    let mut ap = VecActionProducer::new();
-
-    eval_spec(&mut ap, &zfs_list_output.into_specification(), &zfs_spec);
-
-    let (actions, errors) = ap.finalize();
-    let commands = actions.to_commands();
-
-    for error in errors {
-        log::error!("{}", error)
-    }
-
     match cli.command {
-        Commands::Plan { output } => {
-            if let Some(output) = output {
-                let mut output =
-                    File::create(output).map_err(ZfsDiskoError::PlanOutputWriteFailed)?;
+        Commands::Out { spec, commands } => {
+            let zfs_spec = {
+                let file = File::open(spec).map_err(ZfsDiskoError::SpecNotFound)?;
+                ZfsSpecification::from_reader(file).map_err(ZfsDiskoError::InvalidSpec)?
+            };
 
-                for command in commands {
-                    write!(&mut output, "{}\n", command.join(" "))
-                        .map_err(ZfsDiskoError::PlanOutputWriteFailed)?;
-                }
-            } else {
-                for command in commands {
-                    println!("> {}", command.join(" "))
-                }
+            let mut ap = VecActionProducer::new();
+
+            eval_spec(
+                &mut ap,
+                &zfs_list_output.into_specification(&Default::default()),
+                &zfs_spec,
+            );
+
+            let (actions, errors) = ap.finalize();
+            let action_commands = actions.to_commands();
+
+            for error in errors {
+                log::error!("{}", error)
             }
 
-            Ok(())
+            match commands {
+                CommandsOut::Plan { output } => {
+                    if let Some(output) = output {
+                        let mut output =
+                            File::create(output).map_err(ZfsDiskoError::PlanOutputWriteFailed)?;
+
+                        for command in action_commands {
+                            write!(&mut output, "{}\n", command.join(" "))
+                                .map_err(ZfsDiskoError::PlanOutputWriteFailed)?;
+                        }
+                    } else {
+                        for command in action_commands {
+                            println!("> {}", command.join(" "))
+                        }
+                    }
+
+                    Ok(())
+                }
+                CommandsOut::Apply => {
+                    for command in action_commands {
+                        println!("+ {}", &command.join(" "));
+                        Command::new(&command[0])
+                            .args(&command[1..])
+                            .status()
+                            .map_err(ZfsDiskoError::ZFSCommandFailed)?;
+                    }
+
+                    Ok(())
+                }
+            }
         }
-        Commands::Apply => {
-            for command in commands {
-                println!("+ {}", &command.join(" "));
-                Command::new(&command[0])
-                    .args(&command[1..])
-                    .status()
-                    .map_err(ZfsDiskoError::ZFSCommandFailed)?;
-            }
+        Commands::Show { properties } => {
+            let maybe_properties = if properties.is_empty() {
+                None
+            } else {
+                Some(properties.into_iter().collect())
+            };
+            let current_spec = zfs_list_output.into_specification(&SpecificationFilter::<
+                fn(&PropertySource) -> bool,
+            > {
+                properties: maybe_properties,
+                property_sources: Some(|p| p.user_managed()),
+            });
+            serde_json::to_writer_pretty(std::io::stdout(), &current_spec)
+                .map_err(ZfsDiskoError::SeriliazationCurrentSpecFailed)?;
 
             Ok(())
         }
