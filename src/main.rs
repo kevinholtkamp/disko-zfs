@@ -366,15 +366,6 @@ struct Cli {
     command: Commands,
 }
 
-#[derive(Clone, clap::Subcommand)]
-enum CommandsOut {
-    Plan {
-        #[arg(short, long)]
-        output: Option<PathBuf>,
-    },
-    Apply,
-}
-
 #[derive(Clone, clap::ValueEnum)]
 enum CommandShowFormat {
     Json,
@@ -383,11 +374,15 @@ enum CommandShowFormat {
 
 #[derive(Clone, clap::Subcommand)]
 enum Commands {
-    Out {
+    Plan {
+        #[arg(short, long)]
+        output: Option<PathBuf>,
         #[arg(short, long)]
         spec: PathBuf,
-        #[command(subcommand)]
-        commands: CommandsOut,
+    },
+    Apply {
+        #[arg(short, long)]
+        spec: PathBuf,
     },
     Show {
         #[arg(value_enum, short, long, default_value = "json")]
@@ -397,11 +392,36 @@ enum Commands {
     },
 }
 
-fn main() -> Result<(), ZfsDiskoError> {
-    simple_logger::SimpleLogger::new().env().init().unwrap();
+fn get_actions(
+    specification_file: &PathBuf,
+    zfs_list_output: ZfsList,
+) -> Result<Vec<Vec<String>>, ZfsDiskoError> {
+    let zfs_specification = {
+        let file = File::open(specification_file).map_err(ZfsDiskoError::SpecNotFound)?;
+        ZfsSpecification::from_reader(file).map_err(ZfsDiskoError::InvalidSpec)?
+    };
 
+    let mut ap = VecActionProducer::new();
+
+    eval_spec(
+        &mut ap,
+        &zfs_list_output.into_specification(&Default::default()),
+        &zfs_specification,
+    );
+
+    let (actions, errors) = ap.finalize();
+
+    for error in errors {
+        log::error!("{}", error)
+    }
+
+    Ok(actions.to_commands())
+}
+
+fn main() -> Result<(), ZfsDiskoError> {
     let cli = Cli::parse();
 
+    simple_logger::SimpleLogger::new().env().init().unwrap();
     // let zfs_spec = ZfsSpec {
     //     datasets: vec![
     //         ZfsSpecDataset::new(
@@ -448,57 +468,36 @@ fn main() -> Result<(), ZfsDiskoError> {
     };
 
     match cli.command {
-        Commands::Out { spec, commands } => {
-            let zfs_spec = {
-                let file = File::open(spec).map_err(ZfsDiskoError::SpecNotFound)?;
-                ZfsSpecification::from_reader(file).map_err(ZfsDiskoError::InvalidSpec)?
-            };
+        Commands::Plan { spec, output } => {
+            let action_commands = get_actions(&spec, zfs_list_output)?;
 
-            let mut ap = VecActionProducer::new();
+            if let Some(output) = output {
+                let mut output = File::create(output).map_err(ZfsDiskoError::WriteStdoutFailed)?;
 
-            eval_spec(
-                &mut ap,
-                &zfs_list_output.into_specification(&Default::default()),
-                &zfs_spec,
-            );
-
-            let (actions, errors) = ap.finalize();
-            let action_commands = actions.to_commands();
-
-            for error in errors {
-                log::error!("{}", error)
-            }
-
-            match commands {
-                CommandsOut::Plan { output } => {
-                    if let Some(output) = output {
-                        let mut output =
-                            File::create(output).map_err(ZfsDiskoError::WriteStdoutFailed)?;
-
-                        for command in action_commands {
-                            write!(&mut output, "{}\n", command.join(" "))
-                                .map_err(ZfsDiskoError::WriteStdoutFailed)?;
-                        }
-                    } else {
-                        for command in action_commands {
-                            println!("> {}", command.join(" "))
-                        }
-                    }
-
-                    Ok(())
+                for command in action_commands {
+                    write!(&mut output, "{}\n", command.join(" "))
+                        .map_err(ZfsDiskoError::WriteStdoutFailed)?;
                 }
-                CommandsOut::Apply => {
-                    for command in action_commands {
-                        println!("+ {}", &command.join(" "));
-                        Command::new(&command[0])
-                            .args(&command[1..])
-                            .status()
-                            .map_err(ZfsDiskoError::ZFSCommandFailed)?;
-                    }
-
-                    Ok(())
+            } else {
+                for command in action_commands {
+                    println!("> {}", command.join(" "))
                 }
             }
+
+            Ok(())
+        }
+        Commands::Apply { spec } => {
+            let action_commands = get_actions(&spec, zfs_list_output)?;
+
+            for command in action_commands {
+                println!("+ {}", &command.join(" "));
+                Command::new(&command[0])
+                    .args(&command[1..])
+                    .status()
+                    .map_err(ZfsDiskoError::ZFSCommandFailed)?;
+            }
+
+            Ok(())
         }
         Commands::Show { format, properties } => {
             let maybe_properties = if properties.is_empty() {
