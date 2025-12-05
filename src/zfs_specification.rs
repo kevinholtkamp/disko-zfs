@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, io::Read};
 
-use crate::property::{PropertySource, PropertyValue};
+use crate::{
+    prefix_paths::PrefixPaths,
+    property::{PropertySource, PropertyValue},
+};
 
 #[derive(Deserialize, Serialize, Clone)]
 #[serde(transparent)]
@@ -55,7 +58,9 @@ impl ZfsSpecification {
     where
         R: Read,
     {
-        serde_json::from_reader(rdr)
+        let mut res: ZfsSpecification = serde_json::from_reader(rdr)?;
+        res.expand_sub_datasets();
+        Ok(res)
     }
 
     pub fn get_dataset<S>(&self, name: S) -> Option<&ZfsSpecificationDataset>
@@ -63,5 +68,25 @@ impl ZfsSpecification {
         S: AsRef<str>,
     {
         self.datasets.get(name.as_ref())
+    }
+
+    pub fn expand_sub_datasets(&mut self) {
+        let mut datasets_sorted = self
+            .datasets
+            .iter()
+            .map(|(k, _)| k.clone())
+            .collect::<Vec<_>>();
+        datasets_sorted.sort_by_key(String::len);
+
+        for name in datasets_sorted {
+            let name = name.clone();
+            for dataset_prefix in PrefixPaths::new(&name) {
+                self.datasets.entry(dataset_prefix.to_string()).or_insert(
+                    ZfsSpecificationDataset {
+                        properties: HashMap::new(),
+                    },
+                );
+            }
+        }
     }
 }

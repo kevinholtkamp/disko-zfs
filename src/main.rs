@@ -34,10 +34,12 @@ pub enum ZfsDiskoError {
 use clap::Parser as _;
 
 use crate::{
+    prefix_paths::PrefixPaths,
     property::{PropertySource, PropertyValue},
     zfs_list_output::{SpecificationFilter, ZfsList},
     zfs_specification::{ZfsSpecification, ZfsSpecificationDataset},
 };
+mod prefix_paths;
 mod property;
 mod zfs_list_output;
 mod zfs_specification;
@@ -403,22 +405,6 @@ fn eval_spec<AP>(
             }
         } else {
             log::trace!("prepare dataset {}", dataset_name);
-
-            struct PrefixPaths<'a>(&'a str, MatchIndices<'a, char>);
-
-            impl<'a> PrefixPaths<'a> {
-                fn new(string: &'a str) -> PrefixPaths<'a> {
-                    PrefixPaths(string, string.match_indices('/'))
-                }
-            }
-
-            impl<'a> Iterator for PrefixPaths<'a> {
-                type Item = &'a str;
-
-                fn next(&mut self) -> Option<Self::Item> {
-                    self.1.next().map(|(index, _)| &self.0[0..index])
-                }
-            }
 
             for dataset_part in PrefixPaths::new(&dataset_name) {
                 if actual.get_dataset(dataset_part).is_none() {
