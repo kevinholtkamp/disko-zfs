@@ -8,6 +8,13 @@
 let
   cfg = config.disko.zfs;
   configFile = (pkgs.formats.json { }).generate "spec.json" cfg.settings;
+
+  command = action: ''
+    ${lib.getExe cfg.package} \
+      --log-level ${cfg.settings.logLevel} \
+        ${action} \
+        --spec ${configFile}
+  '';
 in
 {
   options.disko.zfs = {
@@ -75,11 +82,22 @@ in
 
           script = ''
             export PATH="$PATH:/run/booted-system/sw/bin"
-            ${lib.getExe cfg.package} \
-              --log-level ${cfg.settings.logLevel} \
-                apply \
-                --spec ${configFile}
+            ${command "apply"}
           '';
+        };
+
+        system.activationScripts."disko-zfs" = {
+          text = ''
+            (
+              if [[ "$NIXOS_ACTION" == "dry-activate" ]] ; then
+                echo "-- disko-zfs --"
+                export PATH="$PATH:/run/booted-system/sw/bin"
+                ${command "plan"}
+                echo "-- disko-zfs --"
+              fi
+            )
+          '';
+          supportsDryActivation = true;
         };
       }
       (lib.mkIf (config ? disko) {
