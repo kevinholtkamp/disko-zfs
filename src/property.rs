@@ -32,10 +32,9 @@ impl PropertySource {
         match self {
             PropertySource::Local { .. }
             | PropertySource::Inherited { .. }
-            | PropertySource::Default { .. } => true,
-            PropertySource::Received { .. }
-            | PropertySource::Temporary { .. }
-            | PropertySource::None { .. } => false,
+            | PropertySource::Default { .. }
+            | PropertySource::Received { .. } => true,
+            PropertySource::Temporary { .. } | PropertySource::None { .. } => false,
         }
     }
 }
