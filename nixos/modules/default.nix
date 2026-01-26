@@ -7,7 +7,7 @@
 }:
 let
   cfg = config.disko.zfs;
-  configFile = (pkgs.formats.json { }).generate "spec.json" cfg.settings;
+  configFile = (pkgs.formats.json { }).generate "disko-zfs-spec.json" cfg.settings;
 
   command = action: ''
     ${lib.getExe cfg.package} \
