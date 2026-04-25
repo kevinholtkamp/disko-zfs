@@ -96,7 +96,7 @@ impl ActionSet {
                     output.extend(
                         properties
                             .iter()
-                            .map(|(name, value)| format!("-o{}={}", name, value.to_string())),
+                            .map(|(name, value)| format!("-o {}={}", name, value.to_string())),
                     );
                     output.push(name.to_owned());
                     output
